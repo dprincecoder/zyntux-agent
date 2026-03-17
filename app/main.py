@@ -269,7 +269,7 @@ def get_evaluations():
 def _homepage_html(base_url: str, telegram_link: str | None) -> str:
     telegram_html = (
         f'<a href="{telegram_link}" target="_blank" rel="noopener noreferrer" '
-        'style="color: #60a5fa; font-weight: bold;">Zyntux (aka ZynthClaw)</a>'
+        'style="color: #60a5fa; font-weight: bold;">ZynthClaw</a>'
         if telegram_link
         else '<strong style="color: #94a3b8;">Configure TELEGRAM_BOT_USERNAME to show the Telegram link.</strong>'
     )
@@ -297,7 +297,7 @@ def _homepage_html(base_url: str, telegram_link: str | None) -> str:
 </head>
 <body>
   <div class="container">
-    <h1>Zyntux (aka ZynthClaw)</h1>
+  <h1>ZynthClaw</h1>
     <h3>What I do</h3>
     <p>I detect <strong style="color: #fff;">critical open-source infrastructure</strong> that may need funding or community support. I crawl GitHub by topic or repo, collect maintenance and ecosystem metrics, and surface <strong style="color: #60a5fa;">funding candidates</strong>—projects with high dependents but few active maintainers.</p>
 
@@ -307,7 +307,7 @@ def _homepage_html(base_url: str, telegram_link: str | None) -> str:
     </section>
 
     <section>
-      <h3>How to talk to Zyntux</h3>
+    <h3>How to talk to ZynthClaw</h3>
       <p>You can talk to me in two ways:</p>
       <ol style="color: #d4d4d8;">
         <li style="margin-bottom: 1rem;">
@@ -343,7 +343,7 @@ def homepage(request: Request):
 @app.get("/skill.md")
 def get_skill_md():
     """
-    Serve the Zyntux skill description markdown file for other agents or browsers.
+    Serve the ZynthClaw skill description markdown file for other agents or browsers.
     """
     root_dir = Path(__file__).resolve().parent.parent
     skill_path = root_dir / "skill.md"

@@ -1,24 +1,22 @@
-Zyntux — Open Source Funding Radar
+ZynthClaw — Public Goods Evaluation Agent
 
-> Automatically identify critical open source infrastructure that powers large ecosystems but has too few maintainers.
+> A conversational agent that helps evaluate public goods projects by combining community sentiment, direct human impact, and developer activity signals.
 
 ## What I do
 
-I crawl GitHub for repositories matching given topics (or a single repo URL),
-collect deep maintenance and ecosystem metrics, and surface **funding candidates**:
-projects with **high dependents** but **low active contributors**.
+I guide a user (typically via Telegram) through a **staged evaluation** of a project:
 
-For every repository, I:
+- Start from a project’s **X handle** (e.g. `@project`) to anchor the evaluation.
+- Ask the user for detailed, qualitative feedback about **how the project impacted them**.
+- Optionally ingest a **GitHub repository** to read developer activity signals.
+- Combine these signals into an **Impact Evaluation Report** and a **mechanism design recommendation** for public-goods funding.
 
-- Collect metrics: stars, forks, open issues, creation date, last commit date, total contributors, active contributors over the last 90 days, and dependents count.
-- Compute scores: `impact_score`, `maintainer_sustainability_score`, `ecosystem_dependency_score`, `criticality_score`, and `risk_flag` (`LOW`, `MEDIUM`, `HIGH`).
-- Derive an `analysis` string for fragile backbone projects (for example: “This repository is a critical backbone of the ecosystem with very few active maintainers. High risk of failure if maintainers stop contributing.”).
+Internally, I:
 
-I then:
-
-- **Prioritize funding candidates**: `dependents_count >= 500` and `active_contributors_90d < 20`.
-- **Filter out non-infrastructure repos**: skip obvious educational or “awesome list” style projects.
-- Return both the **funding candidates** and **all evaluated repos** for manual review.
+- Keep the X analysis modular (placeholder until a live X API is wired).
+- Use `GitHubService` to collect stars, forks, open issues, contributors, and recent commit activity.
+- Classify overall impact as **High**, **Moderate**, or **Emerging** based on user feedback and GitHub signals.
+- Produce a mechanism-design narrative suggesting how funding or incentives might be structured.
 
 ## How to use me
 
@@ -26,7 +24,43 @@ Assume the agent is running at:
 
 `BASE_URL=http://127.0.0.1:8000`
 
-### Option A — Evaluate by topics (recommended)
+There are two ways to interact with ZynthClaw:
+
+1. **Conversational evaluation via Telegram (recommended for humans).**
+2. **HTTP API for infrastructure-risk scoring (legacy, for automated agents).**
+
+---
+
+## 1. Conversational Public-Goods Evaluation (Telegram)
+
+The Telegram bot exposes a stateful evaluation flow:
+
+1. **X handle** – user sends a handle (e.g. `@project`).
+2. **User impact** – user answers “How has this project impacted your workflow, business, or people around you?”  
+   - Short answers (`< 20` words) or replies like `skip`, `no`, `next`, or “i don't have anything to say” are rejected with:  
+     **“I need to understand how this project has impacted you to be able to proceed.”**
+3. **Optional GitHub repo** – user may send a repo URL or skip.
+4. **Impact Evaluation Report** – agent responds with:
+   - community sentiment summary (X, placeholder),
+   - user impact summary,
+   - developer activity summary (GitHub, if provided),
+   - overall impact classification (`High`, `Moderate`, `Emerging`),
+   - mechanism design recommendation.
+5. **Raw data export** – about a minute later, the agent asks if the user wants a **PDF** of the raw collated data (sentiment summary, user feedback, GitHub summary, classification, mechanism design) emailed to them.
+
+This flow is fully implemented inside the Telegram bot (`tg_bot/bot.py`) and is not directly exposed as an HTTP endpoint, but you can treat the core logic as:
+
+- `build_public_goods_evaluation(x_handle, user_feedback, repo_url?) -> EvaluationDict`
+
+You can call this function from other Python agents that run inside the same process.
+
+---
+
+## 2. HTTP API – Infrastructure-Risk Scoring (Legacy Mode)
+
+The HTTP API remains focused on *infrastructure risk* and **funding candidates**:
+
+### Evaluate by topics
 
 Discover infrastructure projects for one or more GitHub topics.
 
@@ -72,7 +106,7 @@ curl -X POST "$BASE_URL/evaluate/topics" \
 
 Use this when you want **a ranked list of funding targets** for a topic.
 
-### Option B — Evaluate a single repository
+### Evaluate a single repository
 
 Check whether one specific repo is a funding candidate.
 
@@ -118,7 +152,7 @@ If the repo does **not** meet funding criteria, you’ll get:
 { "count": 0, "funding_candidates": [] }
 ```
 
-### Option C — Fetch full evaluation context (manual review)
+### Fetch full evaluation context (manual review)
 
 Get **both** the last funding candidates **and** all evaluated projects from the latest request.
 
@@ -137,50 +171,13 @@ curl "$BASE_URL/evaluations"
 ```json
 {
   "count": 3,
-  "funding_candidates": [
-    {
-      "full_name": "ethers-io/ethers.js",
-      "html_url": "https://github.com/ethers-io/ethers.js",
-      "description": "...",
-      "total_contributors": 42,
-      "open_issues": 128,
-      "impact_score": 92.5,
-      "dependents_count": 680489,
-      "active_contributors_90d": 1,
-      "risk_flag": "HIGH",
-      "analysis": "..."
-    }
-  ],
+  "funding_candidates": [ /* ... */ ],
   "evaluations_count": 20,
-  "evaluations": [
-    {
-      "full_name": "ethers-io/ethers.js",
-      "html_url": "https://github.com/ethers-io/ethers.js",
-      "impact_score": 92.5,
-      "maintainer_sustainability_score": 34.0,
-      "ecosystem_dependency_score": 95.0,
-      "criticality_score": 93.75,
-      "risk_flag": "HIGH",
-      "analysis": "...",
-      "metrics": {
-        "full_name": "ethers-io/ethers.js",
-        "html_url": "https://github.com/ethers-io/ethers.js",
-        "description": "...",
-        "stars": 65000,
-        "forks": 8000,
-        "open_issues": 128,
-        "created_at": "2016-06-01T00:00:00+00:00",
-        "last_commit_at": "2026-03-10T12:34:56+00:00",
-        "contributors_count": 42,
-        "active_contributors_90d": 1,
-        "dependents_count": 680489
-      }
-    }
-  ]
+  "evaluations": [ /* ... */ ]
 }
 ```
 
-## Response format (funding candidates)
+### Response format (funding candidates)
 
 ```json
 {
@@ -202,7 +199,7 @@ curl "$BASE_URL/evaluations"
 }
 ```
 
-## Rules
+## Rules (HTTP infrastructure-risk API)
 
 - GitHub REST API + HTML scraping only.
 - Only public GitHub repositories.
@@ -225,8 +222,8 @@ curl "$BASE_URL/evaluations"
 
 ## Goal
 
-Zyntux exists to help funders and ecosystem stewards quickly identify
-**open source public goods** that power many other projects but have
-too few active maintainers, so those projects can be prioritized for
-funding, support, and long-term sustainability.
+ZynthClaw exists to help funders and ecosystem stewards:
+
+- Run **rich, human-in-the-loop evaluations** of public goods projects via Telegram, and  
+- Quickly identify **open source public goods** that power many other projects but have too few active maintainers, via the HTTP infrastructure-risk API.
 

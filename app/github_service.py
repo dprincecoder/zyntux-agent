@@ -26,6 +26,9 @@ class GitHubService:
         headers: Dict[str, str] = {"Accept": "application/vnd.github+json"}
         if self.token:
             headers["Authorization"] = f"Bearer {self.token}"
+        # Simple debug aid for seeing which token/config is in use
+        # (token value itself is not printed).
+        print("[GitHubService] Creating client for", self.base_url)
         return httpx.Client(base_url=self.base_url, headers=headers, timeout=20.0)
 
     @staticmethod
@@ -236,7 +239,7 @@ class GitHubService:
         """
         url = f"https://github.com/{full_name}/network/dependents"
         headers: Dict[str, str] = {
-            "User-Agent": "Mozilla/5.0 (compatible; Zyntux-Evaluator/1.0)",
+            "User-Agent": "Mozilla/5.0 (compatible; ZynthClaw-Evaluator/1.0)",
             "Accept": "text/html,application/xhtml+xml",
         }
         if self.token:

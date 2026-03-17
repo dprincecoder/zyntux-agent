@@ -12,6 +12,7 @@ from reportlab.pdfgen import canvas
 
 from .config import get_settings
 
+
 MAX_EMAIL_CANDIDATES = 10
 EMAIL_REGEX = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
@@ -49,7 +50,7 @@ def _get_candidates(results: Dict[str, Any]) -> List[Dict[str, Any]]:
 
 def _build_plain_text_body(candidate_count: int) -> str:
     lines = [
-        "Zyntux (aka ZynthClaw) Funding Candidates",
+        "ZynthClaw Funding Candidates",
         "",
         "Attached is a PDF report of the latest high-priority open-source projects that may require funding or community support.",
         f"The report currently includes {candidate_count} funding candidate(s).",
@@ -206,3 +207,144 @@ def send_funding_targets_email(recipient_email: str, results: Dict[str, Any]) ->
             server.send_message(message)
 
     return len(candidates)
+
+
+def _build_plain_text_raw_evaluation(project_handle: str, created_at: str) -> str:
+    lines = [
+        "ZynthClaw Public Goods Evaluation – Raw Data",
+        "",
+        f"Project: @{project_handle}",
+        f"Generated: {created_at}",
+        "",
+        "Attached is a PDF containing the raw collated data used to build the impact evaluation:",
+        "- Community sentiment and X-related signals (placeholder until X integration is wired).",
+        "- Your detailed feedback from Telegram.",
+        "- Optional GitHub developer-activity summary if a repo was provided.",
+        "",
+        "Open the PDF to review and re-interpret the signals in your own workflow.",
+    ]
+    return "\n".join(lines).strip()
+
+
+def _build_html_raw_evaluation(project_handle: str, created_at: str) -> str:
+    return f"""
+    <html>
+      <body style="font-family: Arial, sans-serif; color: #1f2937; line-height: 1.5;">
+        <h2 style="margin-bottom: 8px;">ZynthClaw Public Goods Evaluation – Raw Data</h2>
+        <p style="margin-top: 0;">Project: @{project_handle}</p>
+        <p style="margin-top: 0;">Generated: {created_at}</p>
+        <p>
+          Attached is a PDF containing the raw collated data used to build the impact evaluation:
+        </p>
+        <ul>
+          <li>Community sentiment and X-related signals (placeholder until X integration is wired).</li>
+          <li>Your detailed feedback from Telegram.</li>
+          <li>Optional GitHub developer-activity summary if a repo was provided.</li>
+        </ul>
+        <p>
+          Open the PDF to review and re-interpret the signals in your own workflow.
+        </p>
+      </body>
+    </html>
+    """
+
+
+def _generate_raw_evaluation_pdf(evaluation: Dict[str, Any]) -> bytes:
+    buffer = BytesIO()
+    pdf = canvas.Canvas(buffer, pagesize=letter)
+    width, height = letter
+    left = 50
+    max_width = int(width - 100)
+    y = int(height - 50)
+
+    def draw_block(title: str, text: str) -> None:
+        nonlocal y
+        if y < 140:
+            pdf.showPage()
+            y = int(height - 50)
+            pdf.setFont("Helvetica", 10)
+
+        pdf.setFont("Helvetica-Bold", 12)
+        pdf.drawString(left, y, title)
+        y -= 18
+        pdf.setFont("Helvetica", 10)
+        nonlocal_max = max_width
+        y_local = _draw_wrapped_lines(pdf, text or "N/A", left, y, nonlocal_max)
+        y = y_local - 12
+
+    pdf.setTitle("ZynthClaw Public Goods Evaluation – Raw Data")
+    pdf.setFont("Helvetica-Bold", 16)
+    pdf.drawString(left, y, "ZynthClaw Public Goods Evaluation – Raw Data")
+    y -= 24
+
+    pdf.setFont("Helvetica", 10)
+    header = (
+        f"Project: @{evaluation.get('x_handle', 'unknown')}  |  "
+        f"Generated: {evaluation.get('created_at', '')}"
+    )
+    pdf.drawString(left, y, header)
+    y -= 24
+
+    draw_block("Community sentiment summary", evaluation.get("community_sentiment_summary", ""))
+    draw_block("User feedback (Telegram)", evaluation.get("user_feedback", ""))
+
+    if evaluation.get("github_repo_url"):
+        gh_text = (
+            f"Repository: {evaluation.get('github_repo_url')}\n\n"
+            f"{evaluation.get('github_summary', '')}"
+        )
+        draw_block("GitHub developer activity", gh_text)
+
+    draw_block(
+        "Impact classification and mechanism design",
+        (
+            f"Impact classification: {evaluation.get('impact_classification', 'N/A')}\n\n"
+            f"{evaluation.get('mechanism_design_recommendation', '')}"
+        ),
+    )
+
+    pdf.save()
+    buffer.seek(0)
+    return buffer.getvalue()
+
+
+def send_raw_evaluation_email(recipient_email: str, evaluation: Dict[str, Any]) -> None:
+    recipient_email = recipient_email.strip()
+    if not is_valid_email(recipient_email):
+        raise EmailServiceError("Please provide a valid email address.")
+
+    _require_smtp_settings()
+
+    handle = evaluation.get("x_handle", "unknown")
+    created_at = evaluation.get("created_at", datetime.now(timezone.utc).isoformat())
+
+    settings = get_settings()
+    message = EmailMessage()
+    message["Subject"] = "ZynthClaw Public Goods Evaluation – Raw Data"
+    message["From"] = settings.smtp_from_email
+    message["To"] = recipient_email
+
+    plain_text = _build_plain_text_raw_evaluation(handle, created_at)
+    html = _build_html_raw_evaluation(handle, created_at)
+    message.set_content(plain_text)
+    message.add_alternative(html, subtype="html")
+    message.add_attachment(
+        _generate_raw_evaluation_pdf(evaluation),
+        maintype="application",
+        subtype="pdf",
+        filename="zynthclaw_public_goods_raw_evaluation.pdf",
+    )
+
+    if settings.smtp_use_ssl:
+        with smtplib.SMTP_SSL(settings.smtp_host, settings.smtp_port, timeout=30) as server:
+            server.login(settings.smtp_username, settings.smtp_password)
+            server.send_message(message)
+    else:
+        with smtplib.SMTP(settings.smtp_host, settings.smtp_port, timeout=30) as server:
+            server.ehlo()
+            if settings.smtp_use_tls:
+                server.starttls()
+                server.ehlo()
+            server.login(settings.smtp_username, settings.smtp_password)
+            server.send_message(message)
+
