@@ -7,3 +7,4 @@ beautifulsoup4==4.12.3
 python-telegram-bot>=21.0.0
 requests>=2.0.0
 reportlab==4.4.10
+snscrape==0.7.0.20230622

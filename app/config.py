@@ -10,7 +10,7 @@ load_dotenv()
 
 
 class Settings(BaseModel):
-    app_name: str = "Zyntux AI Evaluation Agent"
+    app_name: str = "ZynthClaw AI Evaluation Agent"
     github_token: Optional[str] = os.getenv("GITHUB_TOKEN")
     github_api_base: str = "https://api.github.com"
     github_search_page_size: int = 50  # per-page repositories when crawling topics

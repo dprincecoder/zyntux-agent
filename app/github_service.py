@@ -26,6 +26,9 @@ class GitHubService:
         headers: Dict[str, str] = {"Accept": "application/vnd.github+json"}
         if self.token:
             headers["Authorization"] = f"Bearer {self.token}"
+        # Simple debug aid for seeing which token/config is in use
+        # (token value itself is not printed).
+        print("[GitHubService] Creating client for", self.base_url)
         return httpx.Client(base_url=self.base_url, headers=headers, timeout=20.0)
 
     @staticmethod
@@ -226,71 +229,6 @@ class GitHubService:
 
         return len(active_authors)
 
-    def get_dependents_count(self, full_name: str) -> int:
-        """
-        GitHub does not expose dependents via the public REST API.
-        Scrape the repository dependents count from:
-        https://github.com/{owner}/{repo}/network/dependents
-        Page shows e.g. "29,904,291 Repositories" and "562,223 Packages".
-        Returns the repository dependents count; 0 on parse/request failure.
-        """
-        url = f"https://github.com/{full_name}/network/dependents"
-        headers: Dict[str, str] = {
-            "User-Agent": "Mozilla/5.0 (compatible; Zyntux-Evaluator/1.0)",
-            "Accept": "text/html,application/xhtml+xml",
-        }
-        if self.token:
-            headers["Authorization"] = f"Bearer {self.token}"
-
-        try:
-            resp = httpx.get(url, headers=headers, timeout=25.0, follow_redirects=True)
-        except Exception:
-            return 0
-
-        if (
-            resp.status_code == 403
-            and resp.headers.get("X-RateLimit-Remaining") == "0"
-        ):
-            reset_ts = resp.headers.get("X-RateLimit-Reset")
-            raise GitHubRateLimitError(
-                f"GitHub HTML endpoint rate limit exceeded. X-RateLimit-Reset={reset_ts}"
-            )
-        if resp.status_code != 200:
-            return 0
-
-        text = resp.text
-
-        # 1) Match "X Repositories" (e.g. "29,904,291 Repositories" or "1 Repository")
-        repo_match = re.search(
-            r"([\d,]+)\s+Repositories?", text, re.IGNORECASE
-        )
-        if repo_match:
-            raw = repo_match.group(1).replace(",", "").strip()
-            if raw.isdigit():
-                return int(raw)
-
-        # 2) Link with dependent_type=REPOSITORY often has count in text
-        soup = BeautifulSoup(text, "html.parser")
-        for a in soup.find_all("a", href=True):
-            if "dependent_type=REPOSITORY" in a.get("href", "") or (
-                "/network/dependents" in a.get("href", "")
-                and "Repositories" in (a.get_text() or "")
-            ):
-                raw = "".join(c for c in a.get_text(strip=True) if c.isdigit() or c == ",")
-                raw = raw.replace(",", "")
-                if raw.isdigit():
-                    return int(raw)
-
-        # 3) Legacy "Used by X" pattern
-        used_by = soup.find("a", href=re.compile(rf"^/?{re.escape(full_name)}/network/dependents"))
-        if used_by:
-            raw = "".join(c for c in used_by.get_text(strip=True) if c.isdigit() or c == ",")
-            raw = raw.replace(",", "")
-            if raw.isdigit():
-                return int(raw)
-
-        return 0
-
     # High-level, structured helpers requested in the spec -----------------
 
     def get_repo_metrics(self, repo_full_name: str) -> Dict[str, Any]:
@@ -329,13 +267,5 @@ class GitHubService:
             "active_contributors_90d": active_90d,
         }
 
-    def get_dependency_count(self, repo_full_name: str) -> Dict[str, Any]:
-        """
-        Return the number of dependent repositories as structured JSON.
-        This uses a best-effort HTML scrape under the hood.
-        """
-        dependents = self.get_dependents_count(repo_full_name)
-        return {
-            "dependents_count": dependents,
-        }
+    # NOTE: "dependents_count" scraping has been removed.
 
