@@ -14,7 +14,6 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY app ./app
-COPY core ./core
 COPY tg_bot ./tg_bot
 COPY run_agent.py ./run_agent.py
 COPY skill.md ./skill.md
