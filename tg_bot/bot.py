@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import asyncio
+import html
 import re
 from typing import Any, Final
 
 from telegram import Update
+from telegram.constants import ParseMode
 from telegram.constants import ChatAction
 from telegram.ext import (
     Application,
@@ -17,7 +19,7 @@ from telegram.ext import (
 
 from app.email_service import EmailServiceError, is_valid_email, send_raw_evaluation_email
 from app.public_evaluator import build_public_goods_evaluation
-from app.twitter_scraper import TwitterScraperError, fetch_user_bio
+from app.twitter_scraper import TwitterScraperError, fetch_user_bio, fetch_user_posts_with_replies
 
 STATE_KEY: Final[str] = "state"
 EVAL_DATA_KEY: Final[str] = "current_evaluation"
@@ -25,6 +27,8 @@ EVAL_DATA_KEY: Final[str] = "current_evaluation"
 STATE_AWAIT_X_HANDLE: Final[str] = "await_x_handle"
 STATE_AWAIT_USER_FEEDBACK: Final[str] = "await_user_feedback"
 STATE_AWAIT_GITHUB_REPO: Final[str] = "await_github_repo"
+STATE_AWAIT_ADDITIONAL_INFO_OPT_IN: Final[str] = "await_additional_info_opt_in"
+STATE_AWAIT_ADDITIONAL_INFO_TEXT: Final[str] = "await_additional_info_text"
 STATE_EVALUATION_COMPLETE: Final[str] = "evaluation_complete"
 STATE_AWAIT_RAW_EMAIL_OPT_IN: Final[str] = "await_raw_email_opt_in"
 STATE_AWAIT_RAW_EMAIL_ADDRESS: Final[str] = "await_raw_email_address"
@@ -43,7 +47,14 @@ def _normalize_email(text: str) -> str:
     return re.sub(r"\s+", "", text).strip()
 
 
-async def _send(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str) -> None:
+async def _send(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    text: str,
+    *,
+    parse_mode: str | None = None,
+    disable_web_page_preview: bool = True,
+) -> None:
     """Send a message with a short 'typing' effect first."""
     chat = update.effective_chat
     if not chat or not update.message:
@@ -59,7 +70,11 @@ async def _send(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str) -
     if approx_seconds > 0:
         await asyncio.sleep(approx_seconds)
 
-    await update.message.reply_text(text)
+    await update.message.reply_text(
+        text,
+        parse_mode=parse_mode,
+        disable_web_page_preview=disable_web_page_preview,
+    )
 
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -68,14 +83,14 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
     message = (
         "Hello, I am ZynthClaw.\n\n"
-        "I am a Public Goods Evaluation Agent. I guide you through:\n"
-        "- Collecting community sentiment (via X handle),\n"
+        "I am a Public Goods Data Collector Agent. I guide you through:\n"
+        "- Collecting community sentiment typically via X (formerly Twitter),\n"
         "- Capturing your direct human-impact story,\n"
-        "- Optionally checking GitHub developer activity,\n"
-        "- Producing an impact evaluation and mechanism design insight.\n\n"
+        "- Optionally, I also collect GitHub developer activity,\n"
+        "- Therefore Producing an impact evaluation and mechanism design insight.\n\n"
         "Commands:\n"
-        "/evaluate_project - start a new project evaluation\n"
-        "/request_raw_data - email the raw collated data from your last evaluation\n"
+        "/evaluate_project - start a new project collection\n"
+        "/request_raw_data - email the raw collated data from your last project collection\n"
     )
     await _send(update, context, message)
 
@@ -96,7 +111,7 @@ async def request_raw_data_command(update: Update, context: ContextTypes.DEFAULT
         await _send(
             update,
             context,
-            "I don't have a completed evaluation yet. Run /evaluate_project first.",
+            "I don't have a completed collection yet. Run /evaluate_project first.",
         )
         return
 
@@ -120,11 +135,17 @@ async def _run_evaluation_and_reply(
     x_handle = data.get("x_handle", "")
     user_feedback = data.get("user_feedback", "")
     repo_url = data.get("github_repo_url")
+    optional_user_info = data.get("optional_user_info")
 
     await _send(update, context, "Thanks. Let me analyze everything and prepare an evaluation report...")
 
     def _evaluate() -> dict[str, Any]:
-        return build_public_goods_evaluation(x_handle=x_handle, user_feedback=user_feedback, repo_url=repo_url)
+        return build_public_goods_evaluation(
+            x_handle=x_handle,
+            user_feedback=user_feedback,
+            repo_url=repo_url,
+            optional_user_info=optional_user_info,
+        )
 
     try:
         evaluation = await asyncio.to_thread(_evaluate)
@@ -223,7 +244,7 @@ async def text_message_handler(update: Update, context: ContextTypes.DEFAULT_TYP
             await _send(
                 update,
                 context,
-                f"Great, project found: @{handle}\n\nAccording to X, this is how the project describes itself:\n{bio}",
+                f"Great, project found: @{handle}\n\nAccording to X, @{handle} is:\n{bio}",
             )
         else:
             await _send(
@@ -232,12 +253,50 @@ async def text_message_handler(update: Update, context: ContextTypes.DEFAULT_TYP
                 f"Great, project found: @{handle}",
             )
 
+        # Show a small preview of raw X posts + replies (limit 3) in-chat.
+        try:
+            preview_threads = await asyncio.to_thread(
+                fetch_user_posts_with_replies,
+                handle,
+                3,
+                10,
+            )
+            if preview_threads:
+                parts: list[str] = []
+                parts.append("<b>Recent X posts from @{handle}</b>")
+                for idx, th in enumerate(preview_threads, start=1):
+                    post_text = (th.post.text or "").strip()
+                    post_one_line = " ".join(post_text.split())
+                    parts.append("")
+                    parts.append(f"<b>Post {idx}</b>")
+                    parts.append(f"<blockquote>{html.escape(post_one_line[:800])}{'…' if len(post_one_line) > 800 else ''}</blockquote>")
+                    if th.replies:
+                        parts.append("<b>What others are saying</b>")
+                        for r in th.replies[:10]:
+                            author = (r.author_username or "user").lstrip("@")
+                            txt = " ".join((r.text or "").strip().split())
+                            parts.append(
+                                f"<blockquote><b>@{html.escape(author)}</b>\n{html.escape(txt[:800])}{'…' if len(txt) > 800 else ''}</blockquote>"
+                            )
+                    else:
+                        parts.append("<blockquote><i>No replies captured (or all were filtered).</i></blockquote>")
+
+                parts.append("")
+                parts.append(
+                    'To get the full raw data (up to 10 posts + replies) as a pretty PDF, finish the evaluation and then send <b>/request_raw_data</b>.'
+                )
+                await _send(update, context, "\n".join(parts), parse_mode=ParseMode.HTML)
+        except TwitterScraperError as exc:
+            print(f"[Bot] TwitterScraperError while building X preview for @{handle}: {exc}")
+        except Exception as exc:
+            print(f"[Bot] Unexpected error while building X preview for @{handle}: {exc}")
+
         _set_state(context, STATE_AWAIT_USER_FEEDBACK)
         await _send(
             update,
             context,
             (
-                "How has this project impacted your workflow, business, or people around you?\n"
+                "Moving forward, tell me how has this project impacted your workflow, business, or people around you?\n"
                 "Please explain in detail (at least 20 words). You can use bullet points if you like."
             ),
         )
@@ -258,7 +317,7 @@ async def text_message_handler(update: Update, context: ContextTypes.DEFAULT_TYP
             update,
             context,
             (
-                "If you can, please send the project's GitHub repository URL for a deeper evaluation.\n"
+                "To gain even deeper understanding, please send the project's GitHub repository URL for evaluation.\n"
                 "If you don't have it or want to skip, just reply \"skip\"."
             ),
         )
@@ -281,6 +340,39 @@ async def text_message_handler(update: Update, context: ContextTypes.DEFAULT_TYP
             data["github_repo_url"] = None
         else:
             data["github_repo_url"] = text.strip()
+        context.chat_data[EVAL_DATA_KEY] = data
+        _set_state(context, STATE_AWAIT_ADDITIONAL_INFO_OPT_IN)
+        await _send(
+            update,
+            context,
+            (
+                "Optionally, would you like to add any additional information to strengthen this analysis?\n"
+                "For example: a link to an article, docs, a blog post, or any context you think matters.\n\n"
+                "Reply \"Yes\" to add more info, or \"No\" to proceed."
+            ),
+        )
+        return
+
+    if state == STATE_AWAIT_ADDITIONAL_INFO_OPT_IN:
+        lowered = text.lower()
+        if lowered in {"no", "n", "nope", "nah", "skip", "i don't have anything to add", "I don't care"}:
+            data["optional_user_info"] = None
+            context.chat_data[EVAL_DATA_KEY] = data
+            await _run_evaluation_and_reply(update, context)
+            return
+        if lowered in {"yes", "y", "yeah", "yep", "yes please", "great!", "okay", "sure", "alright", "ok"}:
+            _set_state(context, STATE_AWAIT_ADDITIONAL_INFO_TEXT)
+            await _send(
+                update,
+                context,
+                "Great — please drop the additional info (links + any notes).",
+            )
+            return
+        await _send(update, context, "Please reply with \"Yes\" or \"No\".")
+        return
+
+    if state == STATE_AWAIT_ADDITIONAL_INFO_TEXT:
+        data["optional_user_info"] = text.strip()
         context.chat_data[EVAL_DATA_KEY] = data
         await _run_evaluation_and_reply(update, context)
         return

@@ -6,7 +6,7 @@ from typing import Any, Dict, List, Optional
 
 from .github_service import GitHubService
 from .evaluator import Evaluator
-from .twitter_scraper import TwitterScraperError, fetch_user_tweets_and_replies
+from .twitter_scraper import TwitterScraperError, fetch_user_posts_with_replies, fetch_user_tweets_and_replies
 
 
 @dataclass
@@ -14,6 +14,7 @@ class XSignals:
     handle: str
     tweets: List[Dict[str, Any]]
     replies: List[Dict[str, Any]]
+    threads: List[Dict[str, Any]]
     community_summary: str
     sentiment_label: str  # e.g. "positive", "mixed", "critical", "unknown"
 
@@ -35,7 +36,10 @@ def analyze_x_handle(handle: str) -> XSignals:
 
     try:
         print(f"[Evaluator] Analyzing X handle @{handle}")
-        raw_tweets, raw_replies = fetch_user_tweets_and_replies(handle)
+        # Prefer grouped "post -> replies" threads for raw export and better review.
+        threads = fetch_user_posts_with_replies(handle, max_posts=10, max_replies_per_post=30)
+        raw_tweets = [t.post for t in threads]
+        raw_replies = [r for t in threads for r in t.replies]
     except TwitterScraperError as exc:
         summary = (
             f"X analysis for @{handle} could not be completed ({exc}). "
@@ -46,6 +50,7 @@ def analyze_x_handle(handle: str) -> XSignals:
             handle=handle,
             tweets=[],
             replies=[],
+            threads=[],
             community_summary=summary,
             sentiment_label="unknown",
         )
@@ -59,6 +64,7 @@ def analyze_x_handle(handle: str) -> XSignals:
             handle=handle,
             tweets=[],
             replies=[],
+            threads=[],
             community_summary=summary,
             sentiment_label="unknown",
         )
@@ -74,6 +80,7 @@ def analyze_x_handle(handle: str) -> XSignals:
                 "like_count": t.like_count,
                 "retweet_count": t.retweet_count,
                 "reply_count": t.reply_count,
+                "author": t.author_username,
             }
         )
 
@@ -85,8 +92,40 @@ def analyze_x_handle(handle: str) -> XSignals:
                 "date": r.created_at.isoformat() if r.created_at else None,
                 "content": r.text,
                 "like_count": r.like_count,
+                "author": r.author_username,
             }
         )
+
+    # Threaded view for raw export (post -> replies)
+    threads_out: List[Dict[str, Any]] = []
+    try:
+        threads_out = []
+        for th in threads:
+            threads_out.append(
+                {
+                    "post": {
+                        "id": th.post.id,
+                        "date": th.post.created_at.isoformat() if th.post.created_at else None,
+                        "content": th.post.text,
+                        "like_count": th.post.like_count,
+                        "retweet_count": th.post.retweet_count,
+                        "reply_count": th.post.reply_count,
+                        "author": th.post.author_username,
+                    },
+                    "replies": [
+                        {
+                            "id": rr.id,
+                            "date": rr.created_at.isoformat() if rr.created_at else None,
+                            "content": rr.text,
+                            "like_count": rr.like_count,
+                            "author": rr.author_username,
+                        }
+                        for rr in th.replies
+                    ],
+                }
+            )
+    except Exception as exc:
+        print(f"[Evaluator] Failed to build threads output for @{handle}: {exc}")
 
     # Very light sentiment heuristic over replies
     positive_tokens = {"great", "love", "amazing", "awesome", "helpful", "useful", "thank", "thanks"}
@@ -134,6 +173,7 @@ def analyze_x_handle(handle: str) -> XSignals:
         handle=handle,
         tweets=tweets,
         replies=replies,
+        threads=threads_out,
         community_summary="\n".join(summary_lines),
         sentiment_label=sentiment_label,
     )
@@ -293,6 +333,7 @@ def build_public_goods_evaluation(
     x_handle: str,
     user_feedback: str,
     repo_url: Optional[str] = None,
+    optional_user_info: Optional[str] = None,
 ) -> Dict[str, Any]:
     """End-to-end evaluation for a single project as a public good."""
     print(f"[Evaluator] Starting public goods evaluation for @{x_handle}")
@@ -333,6 +374,7 @@ def build_public_goods_evaluation(
         "x_handle": x_signals.handle,
         "community_sentiment_summary": x_signals.community_summary,
         "user_feedback": user_feedback,
+        "optional_user_info": optional_user_info,
         "github_repo_url": github_repo_url,
         "github_summary": github_summary,
         "github_error": github_error,
@@ -341,6 +383,7 @@ def build_public_goods_evaluation(
         "created_at": created_at,
         "x_raw_tweets": x_signals.tweets,
         "x_raw_replies": x_signals.replies,
+        "x_threads": x_signals.threads,
     }
     print(
         f"[Evaluator] Completed public goods evaluation for @{x_signals.handle}: "
