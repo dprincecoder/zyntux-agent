@@ -1,114 +1,20 @@
 from __future__ import annotations
 
-import re
-import smtplib
-from datetime import datetime, timezone
-from email.message import EmailMessage
 from io import BytesIO
 from typing import Any, Dict, List
 
 from reportlab.lib.pagesizes import letter
 from reportlab.pdfgen import canvas
 
-from .config import get_settings
 
-
-EMAIL_REGEX = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
-
-
-class EmailServiceError(RuntimeError):
-    pass
-
-
-def is_valid_email(email: str) -> bool:
-    return bool(EMAIL_REGEX.match(email.strip()))
-
-
-def _require_smtp_settings() -> None:
-    settings = get_settings()
-    missing = [
-        name
-        for name, value in (
-            ("SMTP_HOST", settings.smtp_host),
-            ("SMTP_USERNAME", settings.smtp_username),
-            ("SMTP_PASSWORD", settings.smtp_password),
-            ("SMTP_FROM_EMAIL", settings.smtp_from_email),
-        )
-        if not value
-    ]
-    if missing:
-        raise EmailServiceError(
-            "Email delivery is not configured. Missing: " + ", ".join(missing)
-        )
-
-
-def _draw_wrapped_lines(pdf: canvas.Canvas, text: str, x: int, y: int, max_width: int) -> int:
-    for paragraph in text.splitlines() or [""]:
-        words = paragraph.split()
-        if not words:
-            y -= 14
-            continue
-
-        line = words[0]
-        for word in words[1:]:
-            candidate_line = f"{line} {word}"
-            if pdf.stringWidth(candidate_line, "Helvetica", 10) <= max_width:
-                line = candidate_line
-                continue
-
-            pdf.drawString(x, y, line)
-            y -= 14
-            line = word
-
-        pdf.drawString(x, y, line)
-        y -= 14
-
-    return y
-
-
-def _build_plain_text_raw_evaluation(project_handle: str, created_at: str) -> str:
-    lines = [
-        "ZynthClaw Public Goods Evaluation – Raw Data",
-        "",
-        f"Project: @{project_handle}",
-        f"Generated: {created_at}",
-        "",
-        "Attached is a PDF containing the raw collated data used to build the impact evaluation:",
-        "- Original X posts (tweets) pulled for the handle.",
-        "- Filtered X replies collected for those posts.",
-        "- Your detailed feedback from Telegram.",
-        "- Optional GitHub developer-activity summary if a repo was provided.",
-        "",
-        "Open the PDF to review and re-interpret the signals in your own workflow.",
-    ]
-    return "\n".join(lines).strip()
-
-
-def _build_html_raw_evaluation(project_handle: str, created_at: str) -> str:
-    return f"""
-    <html>
-      <body style="font-family: Arial, sans-serif; color: #1f2937; line-height: 1.5;">
-        <h2 style="margin-bottom: 8px;">ZynthClaw Public Goods Evaluation – Raw Data</h2>
-        <p style="margin-top: 0;">Project: @{project_handle}</p>
-        <p style="margin-top: 0;">Generated: {created_at}</p>
-        <p>
-          Attached is a PDF containing the raw collated data used to build the impact evaluation:
-        </p>
-        <ul>
-          <li>Original X posts (tweets) pulled for the handle.</li>
-          <li>Filtered X replies collected for those posts.</li>
-          <li>Your detailed feedback from Telegram.</li>
-          <li>Optional GitHub developer-activity summary if a repo was provided.</li>
-        </ul>
-        <p>
-          Open the PDF to review and re-interpret the signals in your own workflow.
-        </p>
-      </body>
-    </html>
+def generate_raw_evaluation_pdf(evaluation: Dict[str, Any]) -> bytes:
     """
+    Build the raw public-goods evaluation PDF (X threads, feedback, optional info, GitHub, classification).
 
-
-def _generate_raw_evaluation_pdf(evaluation: Dict[str, Any]) -> bytes:
+    Used by:
+    - Telegram `/export` (send document to user)
+    - HTTP `POST /export` (other agents POST the evaluation JSON, receive PDF bytes)
+    """
     buffer = BytesIO()
     pdf = canvas.Canvas(buffer, pagesize=letter)
     width, height = letter
@@ -237,8 +143,16 @@ def _generate_raw_evaluation_pdf(evaluation: Dict[str, Any]) -> bytes:
     draw_block("Community sentiment summary", evaluation.get("community_sentiment_summary", ""))
     draw_block("User feedback (Telegram)", evaluation.get("user_feedback", ""))
     draw_block("Optional additional info (user-provided)", evaluation.get("optional_user_info", ""))
+    if evaluation.get("governance_description") or evaluation.get("governance_artifacts"):
+        draw_block(
+            "Governance — how decisions work (user-provided)",
+            evaluation.get("governance_description") or "N/A",
+        )
+        draw_block(
+            "Governance — links & artifacts (user-provided)",
+            evaluation.get("governance_artifacts") or "N/A",
+        )
 
-    # Raw X data: prefer threads (post -> replies) for manual review.
     threads = evaluation.get("x_threads") or []
     if threads:
         draw_x_threads(f"X posts and replies (threads) (posts: {len(threads)})", threads)
@@ -268,43 +182,51 @@ def _generate_raw_evaluation_pdf(evaluation: Dict[str, Any]) -> bytes:
     return buffer.getvalue()
 
 
-def send_raw_evaluation_email(recipient_email: str, evaluation: Dict[str, Any]) -> None:
-    recipient_email = recipient_email.strip()
-    if not is_valid_email(recipient_email):
-        raise EmailServiceError("Please provide a valid email address.")
+def _draw_wrapped_lines(pdf: canvas.Canvas, text: str, x: int, y: int, max_width: int) -> int:
+    for paragraph in text.splitlines() or [""]:
+        words = paragraph.split()
+        if not words:
+            y -= 14
+            continue
 
-    _require_smtp_settings()
+        line = words[0]
+        for word in words[1:]:
+            candidate_line = f"{line} {word}"
+            if pdf.stringWidth(candidate_line, "Helvetica", 10) <= max_width:
+                line = candidate_line
+                continue
 
-    handle = evaluation.get("x_handle", "unknown")
-    created_at = evaluation.get("created_at", datetime.now(timezone.utc).isoformat())
+            pdf.drawString(x, y, line)
+            y -= 14
+            line = word
 
-    settings = get_settings()
-    message = EmailMessage()
-    message["Subject"] = "ZynthClaw Public Goods Evaluation – Raw Data"
-    message["From"] = settings.smtp_from_email
-    message["To"] = recipient_email
+        pdf.drawString(x, y, line)
+        y -= 14
 
-    plain_text = _build_plain_text_raw_evaluation(handle, created_at)
-    html = _build_html_raw_evaluation(handle, created_at)
-    message.set_content(plain_text)
-    message.add_alternative(html, subtype="html")
-    message.add_attachment(
-        _generate_raw_evaluation_pdf(evaluation),
-        maintype="application",
-        subtype="pdf",
-        filename="zynthclaw_public_goods_raw_evaluation.pdf",
-    )
+    return y
 
-    if settings.smtp_use_ssl:
-        with smtplib.SMTP_SSL(settings.smtp_host, settings.smtp_port, timeout=30) as server:
-            server.login(settings.smtp_username, settings.smtp_password)
-            server.send_message(message)
-    else:
-        with smtplib.SMTP(settings.smtp_host, settings.smtp_port, timeout=30) as server:
-            server.ehlo()
-            if settings.smtp_use_tls:
-                server.starttls()
-                server.ehlo()
-            server.login(settings.smtp_username, settings.smtp_password)
-            server.send_message(message)
 
+# =============================================================================
+# Disabled: email delivery (SendGrid / SMTP). Export PDF via Telegram /export
+# or POST /export instead — email requires a verified sending domain (DMARC).
+# =============================================================================
+#
+# import base64
+# import re
+# from datetime import datetime, timezone
+# from sendgrid import SendGridAPIClient
+# from sendgrid.helpers.mail import (
+#     Attachment, Disposition, Email, FileContent, FileName, FileType, Mail,
+# )
+# from .config import get_settings
+#
+# EMAIL_REGEX = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+#
+# class EmailServiceError(RuntimeError):
+#     pass
+#
+# def is_valid_email(email: str) -> bool:
+#     return bool(EMAIL_REGEX.match(email.strip()))
+#
+# def send_raw_evaluation_email(recipient_email: str, evaluation: Dict[str, Any]) -> None:
+#     ...

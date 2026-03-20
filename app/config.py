@@ -16,13 +16,18 @@ class Settings(BaseModel):
     github_search_page_size: int = 50  # per-page repositories when crawling topics
     github_max_pages: int = 1  # can be increased if you want more than top 50
     evaluation_max_repos: int = 50  # top N repositories to evaluate
-    smtp_host: Optional[str] = os.getenv("SMTP_HOST")
-    smtp_port: int = int(os.getenv("SMTP_PORT", "587"))
-    smtp_username: Optional[str] = os.getenv("SMTP_USERNAME")
-    smtp_password: Optional[str] = os.getenv("SMTP_PASSWORD")
-    smtp_from_email: Optional[str] = os.getenv("SMTP_FROM_EMAIL")
-    smtp_use_tls: bool = os.getenv("SMTP_USE_TLS", "true").lower() in {"1", "true", "yes", "on"}
-    smtp_use_ssl: bool = os.getenv("SMTP_USE_SSL", "false").lower() in {"1", "true", "yes", "on"}
+    # --- Email disabled: raw data is exported as PDF via Telegram /export and POST /export ---
+    # sendgrid_api_key: Optional[str] = os.getenv("SENDGRID_API_KEY")
+    # sendgrid_from_email: Optional[str] = os.getenv("SENDGRID_FROM_EMAIL")
+    # sendgrid_from_name: Optional[str] = os.getenv("SENDGRID_FROM_NAME")
+    # --- Legacy SMTP (not used; many hosts block outbound SMTP) ---
+    # smtp_host: Optional[str] = os.getenv("SMTP_HOST")
+    # smtp_port: int = int(os.getenv("SMTP_PORT", "587"))
+    # smtp_username: Optional[str] = os.getenv("SMTP_USERNAME")
+    # smtp_password: Optional[str] = os.getenv("SMTP_PASSWORD")
+    # smtp_from_email: Optional[str] = os.getenv("SMTP_FROM_EMAIL")
+    # smtp_use_tls: bool = os.getenv("SMTP_USE_TLS", "true").lower() in {"1", "true", "yes", "on"}
+    # smtp_use_ssl: bool = os.getenv("SMTP_USE_SSL", "false").lower() in {"1", "true", "yes", "on"}
     telegram_bot_username: Optional[str] = os.getenv("TELEGRAM_BOT_USERNAME")
 
 

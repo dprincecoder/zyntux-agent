@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import asyncio
 import html
+import io
 import re
 from typing import Any, Final
 
-from telegram import Update
+from telegram import InputFile, Update
 from telegram.constants import ParseMode
 from telegram.constants import ChatAction
 from telegram.ext import (
@@ -17,7 +18,7 @@ from telegram.ext import (
     filters,
 )
 
-from app.email_service import EmailServiceError, is_valid_email, send_raw_evaluation_email
+from app.email_service import generate_raw_evaluation_pdf
 from app.public_evaluator import build_public_goods_evaluation
 from app.twitter_scraper import TwitterScraperError, fetch_user_bio, fetch_user_posts_with_replies
 
@@ -29,11 +30,66 @@ STATE_AWAIT_USER_FEEDBACK: Final[str] = "await_user_feedback"
 STATE_AWAIT_GITHUB_REPO: Final[str] = "await_github_repo"
 STATE_AWAIT_ADDITIONAL_INFO_OPT_IN: Final[str] = "await_additional_info_opt_in"
 STATE_AWAIT_ADDITIONAL_INFO_TEXT: Final[str] = "await_additional_info_text"
+STATE_AWAIT_GOVERNANCE_DESCRIPTION: Final[str] = "await_governance_description"
+STATE_AWAIT_GOVERNANCE_ARTIFACTS: Final[str] = "await_governance_artifacts"
 STATE_EVALUATION_COMPLETE: Final[str] = "evaluation_complete"
-STATE_AWAIT_RAW_EMAIL_OPT_IN: Final[str] = "await_raw_email_opt_in"
-STATE_AWAIT_RAW_EMAIL_ADDRESS: Final[str] = "await_raw_email_address"
+# Email flow disabled — use /export for PDF instead
+# STATE_AWAIT_RAW_EMAIL_OPT_IN: Final[str] = "await_raw_email_opt_in"
+# STATE_AWAIT_RAW_EMAIL_ADDRESS: Final[str] = "await_raw_email_address"
 
 SKIP_TOKENS = {"skip", "no", "next", "i don't have anything to say", "i dont have anything to say"}
+
+GOVERNANCE_Q1 = (
+    "If you don't mind, what are the governance activities for this project?\n"
+    "You can describe things like:\n"
+    "- how decisions are made\n"
+    "- who participates (team vs community)\n"
+    "- how voting works (if any)\n"
+    "- how frequently governance is conducted\n\n"
+    "Explain in your own words."
+)
+
+GOVERNANCE_Q2 = (
+    "Do you have any links or artifacts related to the governance process?\n"
+    "For example:\n"
+    "- DAO / Snapshot page\n"
+    "- governance forum\n"
+    "- recent proposals or votes\n"
+    "- any public discussion around decisions\n\n"
+    "You can drop links or just describe them."
+)
+
+
+async def _send_analysing_social_and_dev(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> None:
+    await _send(update, context, "Analysing social activity")
+    await asyncio.sleep(0.45)
+    await _send(update, context, "Analysing developer activity")
+    await asyncio.sleep(0.35)
+
+
+async def _send_analysing_social_dev_and_governance(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> None:
+    await _send(update, context, "Analysing social activity")
+    await asyncio.sleep(0.45)
+    await _send(update, context, "Analysing developer activity")
+    await asyncio.sleep(0.45)
+    await _send(update, context, "Analysing governance activity")
+    await asyncio.sleep(0.35)
+
+
+async def _begin_governance_phase(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> None:
+    """After optional info: status lines, then governance Q1."""
+    await _send_analysing_social_and_dev(update, context)
+    _set_state(context, STATE_AWAIT_GOVERNANCE_DESCRIPTION)
+    await _send(update, context, GOVERNANCE_Q1)
 
 
 def _set_state(context: ContextTypes.DEFAULT_TYPE, state: str | None) -> None:
@@ -41,10 +97,6 @@ def _set_state(context: ContextTypes.DEFAULT_TYPE, state: str | None) -> None:
         context.chat_data.pop(STATE_KEY, None)
     else:
         context.chat_data[STATE_KEY] = state
-
-
-def _normalize_email(text: str) -> str:
-    return re.sub(r"\s+", "", text).strip()
 
 
 async def _send(
@@ -87,12 +139,14 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         "- Collecting community sentiment typically via X (formerly Twitter),\n"
         "- Capturing your direct human-impact story,\n"
         "- Optionally, I also collect GitHub developer activity,\n"
-        "- Therefore Producing an impact evaluation and mechanism design insight.\n\n"
+        "- Optionally capturing governance signals,\n"
+        "- Therefore producing an impact evaluation and mechanism design insight.\n\n"
+        "<i>i plan to plug this collected data into a large LLM for better evaluation, mechanism design, and analysis. (still in beta)</i>\n\n"
         "Commands:\n"
         "/evaluate_project - start a new project collection\n"
-        "/request_raw_data - email the raw collated data from your last project collection\n"
+        "/export - download the raw collated data as a PDF (after a completed evaluation)\n"
     )
-    await _send(update, context, message)
+    await _send(update, context, message, parse_mode=ParseMode.HTML)
 
 
 async def evaluate_project_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -105,18 +159,37 @@ async def evaluate_project_command(update: Update, context: ContextTypes.DEFAULT
     )
 
 
-async def request_raw_data_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def export_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Send raw evaluation PDF in Telegram (no email)."""
     evaluation = context.chat_data.get(EVAL_DATA_KEY)
     if not evaluation or "created_at" not in evaluation:
         await _send(
             update,
             context,
-            "I don't have a completed collection yet. Run /evaluate_project first.",
+            "I don't have a completed evaluation yet. Run /evaluate_project first.",
         )
         return
 
-    _set_state(context, STATE_AWAIT_RAW_EMAIL_ADDRESS)
-    await _send(update, context, "Send me the email address where I should send the raw evaluation PDF.")
+    if not update.message:
+        return
+
+    await _send(update, context, "Preparing your PDF…")
+
+    def _pdf() -> bytes:
+        return generate_raw_evaluation_pdf(evaluation)
+
+    try:
+        pdf_bytes = await asyncio.to_thread(_pdf)
+    except Exception as exc:
+        await _send(update, context, f"Could not build the PDF: {exc}")
+        return
+
+    buf = io.BytesIO(pdf_bytes)
+    buf.seek(0)
+    await update.message.reply_document(
+        document=InputFile(buf, filename="zynthclaw_public_goods_raw_evaluation.pdf"),
+        caption="ZynthClaw — raw public goods evaluation data (PDF).",
+    )
 
 
 def _is_skip_feedback(text: str) -> bool:
@@ -136,8 +209,10 @@ async def _run_evaluation_and_reply(
     user_feedback = data.get("user_feedback", "")
     repo_url = data.get("github_repo_url")
     optional_user_info = data.get("optional_user_info")
+    governance_description = data.get("governance_description")
+    governance_artifacts = data.get("governance_artifacts")
 
-    await _send(update, context, "Thanks. Let me analyze everything and prepare an evaluation report...")
+    await _send(update, context, "Building your Impact Evaluation Report…")
 
     def _evaluate() -> dict[str, Any]:
         return build_public_goods_evaluation(
@@ -145,6 +220,8 @@ async def _run_evaluation_and_reply(
             user_feedback=user_feedback,
             repo_url=repo_url,
             optional_user_info=optional_user_info,
+            governance_description=governance_description,
+            governance_artifacts=governance_artifacts,
         )
 
     try:
@@ -181,15 +258,28 @@ async def _run_evaluation_and_reply(
         lines.append("3) Developer activity (GitHub)")
         lines.append("No GitHub repository was provided, so developer signals were not included.")
         lines.append("")
-    lines.append("4) Overall impact classification")
+    lines.append("4) Governance (your input)")
+    if evaluation.get("governance_summary"):
+        lines.append(evaluation.get("governance_summary", ""))
+    elif evaluation.get("governance_description") or evaluation.get("governance_artifacts"):
+        if evaluation.get("governance_description"):
+            lines.append(evaluation.get("governance_description", ""))
+        if evaluation.get("governance_artifacts"):
+            lines.append("")
+            lines.append("Links / artifacts:")
+            lines.append(evaluation.get("governance_artifacts", ""))
+    else:
+        lines.append("No governance description captured.")
+    lines.append("")
+    lines.append("5) Overall impact classification")
     lines.append(evaluation.get("impact_classification", "N/A"))
     lines.append("")
-    lines.append("5) Mechanism design insight")
+    lines.append("6) Mechanism design insight")
     lines.append(evaluation.get("mechanism_design_recommendation", ""))
 
     await _send(update, context, "\n".join(lines).strip())
 
-    # Schedule follow-up asking about emailing raw collated data
+    # Schedule follow-up: offer PDF export (Telegram /export or HTTP POST /export for agents)
     chat = update.effective_chat
     if not chat:
         return
@@ -199,10 +289,12 @@ async def _run_evaluation_and_reply(
         eval_data = context.chat_data.get(EVAL_DATA_KEY)
         if not eval_data:
             return
-        _set_state(context, STATE_AWAIT_RAW_EMAIL_OPT_IN)
         await context.bot.send_message(
             chat_id=chat_id,
-            text="If you want, I can email you the raw collated data for manual review. Yes?",
+            text=(
+                "If you want, I can export the raw collated data (including governance) as a PDF.\n"
+                "Send /export here in Telegram when you're ready.\n\n"
+            ),
         )
 
     asyncio.create_task(_delayed_followup(chat.id))
@@ -283,7 +375,7 @@ async def text_message_handler(update: Update, context: ContextTypes.DEFAULT_TYP
 
                 parts.append("")
                 parts.append(
-                    'To get the full raw data (up to 10 posts + replies) as a pretty PDF, finish the evaluation and then send <b>/request_raw_data</b>.'
+                    "To get the full raw data (up to 10 posts + replies) as a PDF, finish the evaluation and send <b>/export</b>."
                 )
                 await _send(update, context, "\n".join(parts), parse_mode=ParseMode.HTML)
         except TwitterScraperError as exc:
@@ -358,7 +450,7 @@ async def text_message_handler(update: Update, context: ContextTypes.DEFAULT_TYP
         if lowered in {"no", "n", "nope", "nah", "skip", "i don't have anything to add", "I don't care"}:
             data["optional_user_info"] = None
             context.chat_data[EVAL_DATA_KEY] = data
-            await _run_evaluation_and_reply(update, context)
+            await _begin_governance_phase(update, context)
             return
         if lowered in {"yes", "y", "yeah", "yep", "yes please", "great!", "okay", "sure", "alright", "ok"}:
             _set_state(context, STATE_AWAIT_ADDITIONAL_INFO_TEXT)
@@ -374,45 +466,26 @@ async def text_message_handler(update: Update, context: ContextTypes.DEFAULT_TYP
     if state == STATE_AWAIT_ADDITIONAL_INFO_TEXT:
         data["optional_user_info"] = text.strip()
         context.chat_data[EVAL_DATA_KEY] = data
+        await _begin_governance_phase(update, context)
+        return
+
+    if state == STATE_AWAIT_GOVERNANCE_DESCRIPTION:
+        data["governance_description"] = text.strip()
+        context.chat_data[EVAL_DATA_KEY] = data
+        _set_state(context, STATE_AWAIT_GOVERNANCE_ARTIFACTS)
+        await _send(update, context, GOVERNANCE_Q2)
+        return
+
+    if state == STATE_AWAIT_GOVERNANCE_ARTIFACTS:
+        data["governance_artifacts"] = text.strip()
+        context.chat_data[EVAL_DATA_KEY] = data
+        await _send_analysing_social_dev_and_governance(update, context)
         await _run_evaluation_and_reply(update, context)
         return
 
-    if state == STATE_AWAIT_RAW_EMAIL_OPT_IN:
-        lowered = text.lower()
-        if lowered in {"yes", "y", "yeah", "yep"}:
-            _set_state(context, STATE_AWAIT_RAW_EMAIL_ADDRESS)
-            await _send(update, context, "Great. Please send the email address to receive the raw evaluation PDF.")
-            return
-        if lowered in {"no", "n", "nope"}:
-            _set_state(context, STATE_EVALUATION_COMPLETE)
-            await _send(update, context, "Alright, I won't email the raw data. Evaluation completed.")
-            return
-        await _send(update, context, "Please reply with \"Yes\" or \"No\".")
-        return
-
-    if state == STATE_AWAIT_RAW_EMAIL_ADDRESS:
-        email = _normalize_email(text)
-        if not is_valid_email(email):
-            await _send(update, context, "Please send a valid email address.")
-            return
-
-        evaluation = context.chat_data.get(EVAL_DATA_KEY)
-        if not evaluation:
-            await _send(update, context, "I no longer have the evaluation data. Please run /evaluate_project again.")
-            _set_state(context, None)
-            return
-
-        await _send(update, context, "Preparing the PDF and sending the raw evaluation data to your email...")
-
-        try:
-            await asyncio.to_thread(send_raw_evaluation_email, email, evaluation)
-            await _send(update, context, f"Email sent to {email}. Also check your spam folder.")
-            _set_state(context, STATE_EVALUATION_COMPLETE)
-        except EmailServiceError as exc:
-            await _send(update, context, str(exc))
-        except Exception as exc:
-            await _send(update, context, f"Error while sending email: {exc}")
-        return
+    # --- Email flow disabled (see /export) ---
+    # if state == STATE_AWAIT_RAW_EMAIL_OPT_IN: ...
+    # if state == STATE_AWAIT_RAW_EMAIL_ADDRESS: ...
 
     # If we reach here there is no active stateful flow; encourage starting one.
     await _send(
@@ -431,8 +504,7 @@ def build_application(token: str) -> Application:
 
     application.add_handler(CommandHandler("start", start_command))
     application.add_handler(CommandHandler("evaluate_project", evaluate_project_command))
-    application.add_handler(CommandHandler("request_raw_data", request_raw_data_command))
+    application.add_handler(CommandHandler("export", export_command))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_message_handler))
 
     return application
-

@@ -9,6 +9,8 @@ ZynthClaw is an AI agent that helps you evaluate **public goods projects** in a 
 
 to generate an **Impact Evaluation Report** and a **mechanism design insight** for funding decisions.
 
+> **Roadmap (beta):** we plan to pipe this collected data into a **large LLM** for richer evaluation, mechanism design, and analysis. Current behavior is heuristic/rule-based; LLM-assisted depth is coming.
+
 ## Why I exist
 
 Digital Public Infrastructure (DPI) is only as strong as the public goods behind it — tools, protocols, libraries, and services that people depend on every day.
@@ -28,15 +30,15 @@ ZynthClaw exists with a clear objective: **collect signals**, **evaluate impact*
   - long-form user impact feedback (your story),
   - optional GitHub repo → developer activity signals,
   - optional additional info (article/docs links),
+  - governance Q&A (how decisions work + links/artifacts),
   - Impact Evaluation Report + mechanism design recommendation.
-- **Raw data export** – email a **pretty PDF** containing:
-  - up to **10 original X posts** (skipping reposts/retweets),
-  - replies under each post (grouped by `conversation_id`, link-only replies filtered out),
-  - your Telegram feedback + optional extra info,
-  - optional GitHub summary,
-  - classification + mechanism design recommendation.
+  - *Planned:* feed collected signals into a **large LLM** for deeper evaluation & mechanism design (**still in beta**).
+- **Raw data export (PDF)** – no email; download a **pretty PDF** via:
+  - Telegram **`/export`** after a completed evaluation, or
+  - **`POST /export`** (JSON body = evaluation dict) for other AI agents / automation.
+  The PDF includes up to **10 original X posts**, replies under each post, Telegram feedback, optional extra info, optional GitHub summary, and classification + mechanism design.
 - **Homepage** – black-themed landing page with what the agent does, why it exists, and how to talk to it (Telegram).
-- **Agent skill file** – `GET /skill.md` describes the public-goods evaluation flow so other agents can understand how to interact with it.
+- **Agent skill file** – `GET /skill.md` describes the flow; **`GET /export`** describes the PDF API; **`POST /export`** returns the PDF.
 
 ---
 
@@ -68,10 +70,10 @@ See [Installation](#installation) and [Running](#running) below. Use `run_agent.
 ```text
 Zynthclaw/
   app/
-    config.py          # Settings (GitHub, SMTP, Telegram)
-    main.py            # FastAPI app: homepage + skill.md
+    config.py          # Settings (GitHub, Telegram)
+    main.py            # FastAPI app: homepage, skill.md, POST /export (PDF)
     github_service.py  # GitHub API client
-    email_service.py   # Email delivery (raw evaluation PDF)
+    email_service.py   # Raw evaluation PDF generation (Telegram /export + POST /export)
     public_evaluator.py # Public-goods evaluation and mechanism design engine
     twitter_scraper.py # Official X API v2 collector (posts, replies, bio)
   tg_bot/
@@ -94,8 +96,8 @@ Create a `.env` file in the project root (see `.env.example` or below). Required
 | `TELEGRAM_BOT_TOKEN` | Telegram bot token (required if you run the bot) |
 | `TELEGRAM_BOT_USERNAME` | Bot username for homepage link (e.g. `MyBot` → t.me/MyBot) |
 | `X_BEARER_TOKEN` | X API v2 bearer token (required for X bio/posts/replies collection) |
-| `SMTP_HOST`, `SMTP_PORT`, `SMTP_USERNAME`, `SMTP_PASSWORD`, `SMTP_FROM_EMAIL` | Email delivery for raw-data PDF export |
-| `SMTP_USE_TLS`, `SMTP_USE_SSL` | Transport settings (TLS vs SSL) |
+
+Email delivery is **disabled**; raw data is exported as PDF via Telegram **`/export`** or **`POST /export`**. (Optional SendGrid/SMTP settings in `app/config.py` are commented out.)
 
 Example `.env`:
 
@@ -104,13 +106,6 @@ GITHUB_TOKEN=ghp_your_token_here
 TELEGRAM_BOT_TOKEN=your_telegram_bot_token
 TELEGRAM_BOT_USERNAME=YourBotUsername
 X_BEARER_TOKEN=your_x_bearer_token
-SMTP_HOST=smtp.example.com
-SMTP_PORT=587
-SMTP_USERNAME=your_username
-SMTP_PASSWORD=your_password
-SMTP_FROM_EMAIL=bot@example.com
-SMTP_USE_TLS=true
-SMTP_USE_SSL=false
 ```
 
 ---
@@ -163,44 +158,45 @@ In Telegram, send:
 |--------|-------------|
 | `/start` | Intro and description of the public-goods evaluation flow |
 | `/evaluate_project` | Start a new collection & evaluation flow |
-| `/request_raw_data` | Email the raw collated data (PDF) from your last completed flow |
+| `/export` | Send the raw collated data as a **PDF file** in Telegram (after a completed evaluation) |
 
 **Evaluation stages:**
 
 1. **X handle** – you send an X handle (e.g. `@project`).
    - Bot confirms it’s checking X, then returns “project found” and shows the project bio.
    - Bot shows a **preview**: 3 posts (max) with replies visually nested under each post.
-   - Bot reminds you to request full raw data via email for manual review.
+   - Bot reminds you that you can get the full raw data as a PDF with **`/export`** after the evaluation.
 2. **User impact** – you answer:
    “How has this project impacted your workflow, business, or people around you?”  
    - If you try to skip (short reply, “skip”, “no”, “next”, “i don’t have anything to say”), the agent replies:  
      “I need to understand how this project has impacted you to be able to proceed.” and waits for a better answer.  
 3. **Optional GitHub repo** – you may send a repo URL or “skip”.
 4. **Optional additional info** – bot asks if you want to add extra context (articles/docs links).  
-5. **Impact Evaluation Report** – bot responds with:
+5. **Governance** – bot sends “Analysing social activity” and “Analysing developer activity”, then asks how governance works (decisions, participation, voting, cadence) and for links/artifacts (Snapshot, forum, proposals, etc.).
+6. **Impact Evaluation Report** – bot sends “Analysing social activity”, “Analysing developer activity”, and “Analysing governance activity”, then responds with:
    - community sentiment summary (from X),
    - your real user impact feedback,
    - developer activity summary (if GitHub provided),
+   - governance (your answers),
    - overall impact classification (`High`, `Moderate`, `Emerging`),
    - mechanism design recommendation for public-goods funding.
-6. **Raw data offer** – ~1 minute later, the bot asks:
-   “If you want, I can email you the raw collated data for manual review, Yes?”  
-   - If you say **Yes**, it asks for your email and sends the raw data as a PDF.  
-   - If you say **No**, it ends the flow.
+7. **Raw data reminder** – ~1 minute later, the bot reminds you that you can **`/export`** the raw collated data (including governance) as a PDF in Telegram when you want it.
 
 ---
 
-## Email report (PDF)
+## Raw data PDF export
 
-- **Raw public-goods evaluation data (Telegram)** – after `/evaluate_project`, the agent can email you a PDF containing:
-  - up to **10 original X posts** for the handle,
-  - replies grouped under each post by conversation (link-only replies filtered out),
-  - your Telegram feedback + optional additional info,
-  - optional GitHub developer-activity summary,
-  - classification + mechanism design,
-  for manual review. This uses `send_raw_evaluation_email` under the hood.
+- **Telegram** – after a completed `/evaluate_project` flow, send **`/export`**. The bot uploads `zynthclaw_public_goods_raw_evaluation.pdf` with the full threaded X data (up to 10 posts), feedback, optional info, governance text, GitHub summary (if any), and mechanism design text.
+- **HTTP (other AI agents)** – `GET /export` returns JSON API help. **`POST /export`** with a JSON body equal to the evaluation dict (same shape as `build_public_goods_evaluation()` output) returns `application/pdf`.
 
-This flow requires SMTP env vars; see [Configuration](#configuration).
+```bash
+curl -sS -X POST "https://your-host/export" \
+  -H "Content-Type: application/json" \
+  -d @evaluation.json \
+  -o raw.pdf
+```
+
+Implementation: `generate_raw_evaluation_pdf()` in `app/email_service.py`.
 
 ---
 

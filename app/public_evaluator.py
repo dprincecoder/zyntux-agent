@@ -274,6 +274,8 @@ def mechanism_design_recommendation(
     x_signals: XSignals,
     user_feedback: str,
     github_signals: Optional[GitHubSignals],
+    governance_description: Optional[str] = None,
+    governance_artifacts: Optional[str] = None,
 ) -> str:
     """Suggest how funding/incentives could be structured for this public good."""
     parts: List[str] = []
@@ -327,6 +329,13 @@ def mechanism_design_recommendation(
             "mechanisms could help test and amplify its trajectory without overcommitting capital early."
         )
 
+    if governance_description or governance_artifacts:
+        parts.append(
+            "Where governance inputs were provided, factor them into funding design: transparent "
+            "decision-making and community participation often justify mechanisms that reward "
+            "stewardship, delegate accountability, or participation in improvement proposals."
+        )
+
     return " ".join(parts)
 
 
@@ -335,6 +344,8 @@ def build_public_goods_evaluation(
     user_feedback: str,
     repo_url: Optional[str] = None,
     optional_user_info: Optional[str] = None,
+    governance_description: Optional[str] = None,
+    governance_artifacts: Optional[str] = None,
 ) -> Dict[str, Any]:
     """End-to-end evaluation for a single project as a public good."""
     print(f"[Evaluator] Starting public goods evaluation for @{x_handle}")
@@ -352,9 +363,18 @@ def build_public_goods_evaluation(
         x_signals=x_signals,
         user_feedback=user_feedback,
         github_signals=github_signals,
+        governance_description=governance_description,
+        governance_artifacts=governance_artifacts,
     )
 
     created_at = datetime.now(timezone.utc).isoformat()
+
+    gov_parts: List[str] = []
+    if governance_description:
+        gov_parts.append(f"How decisions work (user-provided): {governance_description.strip()}")
+    if governance_artifacts:
+        gov_parts.append(f"Links / artifacts (user-provided): {governance_artifacts.strip()}")
+    governance_combined_summary = "\n\n".join(gov_parts) if gov_parts else ""
 
     github_repo_url: Optional[str]
     github_summary: Optional[str]
@@ -376,6 +396,9 @@ def build_public_goods_evaluation(
         "community_sentiment_summary": x_signals.community_summary,
         "user_feedback": user_feedback,
         "optional_user_info": optional_user_info,
+        "governance_description": governance_description,
+        "governance_artifacts": governance_artifacts,
+        "governance_summary": governance_combined_summary or None,
         "github_repo_url": github_repo_url,
         "github_summary": github_summary,
         "github_error": github_error,

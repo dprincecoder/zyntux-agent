@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
-from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse, HTMLResponse
+from fastapi import Body, FastAPI, HTTPException, Request
+from fastapi.responses import FileResponse, HTMLResponse, Response
 
 from .config import get_settings
+from .email_service import generate_raw_evaluation_pdf
 
 
 settings = get_settings()
@@ -46,6 +48,7 @@ def _homepage_html(base_url: str, telegram_link: str | None) -> str:
   <h1>ZynthClaw</h1>
     <h3>What I do</h3>
     <p>I help collect signals and evaluate <strong style="color: #fff;">public goods</strong> so funders and ecosystem stewards can make better decisions for <strong style="color: #60a5fa;">Digital Public Infrastructure (DPI)</strong>.</p>
+    <p style="font-size: 0.85rem; color: #94a3b8; margin-top: 0.75rem;">Roadmap (beta): we plan to plug this collected data into a large LLM for richer evaluation, mechanism design, and analysis.</p>
 
     <section>
       <h3>Why I exist – the problem I solve</h3>
@@ -96,4 +99,40 @@ def get_skill_md():
     if not skill_path.exists():
         raise HTTPException(status_code=404, detail="skill.md not found")
     return FileResponse(path=skill_path, media_type="text/markdown", filename="skill.md")
+
+
+@app.get("/export")
+def export_pdf_help():
+    """
+    Other AI agents: use POST /export with a JSON body (evaluation dict) to download the raw PDF.
+    """
+    return {
+        "message": "POST a JSON object with the same shape as build_public_goods_evaluation() output.",
+        "method": "POST",
+        "path": "/export",
+        "content_type": "application/json",
+        "response": "application/pdf (attachment: zynthclaw_public_goods_raw_evaluation.pdf)",
+        "example": 'curl -sS -X POST "$BASE_URL/export" -H "Content-Type: application/json" -d @evaluation.json -o raw.pdf',
+    }
+
+
+@app.post("/export")
+def export_pdf(evaluation: dict[str, Any] = Body(...)):
+    """
+    Generate and return the raw evaluation PDF for programmatic / agent use.
+    Body must be the evaluation dict (e.g. from build_public_goods_evaluation).
+    """
+    if not isinstance(evaluation, dict):
+        raise HTTPException(status_code=400, detail="Body must be a JSON object")
+    try:
+        pdf_bytes = generate_raw_evaluation_pdf(evaluation)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"PDF generation failed: {exc}") from exc
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": 'attachment; filename="zynthclaw_public_goods_raw_evaluation.pdf"'
+        },
+    )
 
